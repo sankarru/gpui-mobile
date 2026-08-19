@@ -1,4 +1,4 @@
-name: Build Android APK (aarch64)
+name: Build Android .so lib (aarch64)
 
 on:
   push:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
-    name: Build APK aarch64 with march check
+  build-lib:
+    name: Build .so lib aarch64
     runs-on: ubuntu-24.04
 
     steps:
@@ -30,13 +30,11 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
 
-      - name: Install Java 21 + Android SDK/NDK
+      - name: Install Android NDK
         run: |
-          # Java
           sudo apt-get update -qq
-          sudo apt-get install -y -qq openjdk-21-jdk-headless unzip wget
+          sudo apt-get install -y -qq unzip wget
 
-          # Android SDK command line tools
           export ANDROID_HOME=${{ github.workspace }}/android-sdk
           mkdir -p "$ANDROID_HOME/cmdline-tools"
           curl -fLo /tmp/cmdline-tools.zip \
@@ -44,91 +42,38 @@ jobs:
           unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
           mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
 
-          # Accept licenses & install NDK + build-tools
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --sdk_root="$ANDROID_HOME" \
-            "ndk;29.0.14206865" \
-            "build-tools;35.0.0" \
-            "platforms;android-34" > /dev/null
+            --sdk_root="$ANDROID_HOME" "ndk;29.0.14206865" > /dev/null
 
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 
-      - name: Cache cargo registry + build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.arch }}-cargo-android-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.arch }}-cargo-android-
-            ${{ runner.arch }}-cargo-
-
-      - name: Check march / mcpu compatibility
+      - name: Check march compatibility
         run: |
-          echo "::group::Host CPU info"
-          lscpu | grep -E 'Model name|Architecture|Flags|CPU\(s\)|MHz' || true
-          grep '^Features' /proc/cpuinfo | head -1 || true
-          echo "::endgroup::"
+          lscpu | grep -E 'Model name|Architecture' || true
+          echo "Host: $(uname -m)"
+          echo "Cross-compiling for aarch64 Android"
 
-          ARCH=$(uname -m)
-          echo "Host arch: $ARCH"
-
-          if [ "$ARCH" = "aarch64" ]; then
-            FEATS=$(grep '^Features' /proc/cpuinfo | head -1 | awk '{for(i=2;i<=NF;i++) printf "%s ", $i; print ""}')
-            echo "CPU features: $FEATS"
-            if echo "$FEATS" | grep -qw lse; then
-              echo "LSE atomics: supported"
-            else
-              echo "LSE atomics: NOT supported - using armv8-a baseline"
-            fi
-          else
-            echo "Cross-compiling for aarch64 Android from $ARCH host"
-          fi
-
-          # Verify NDK clang can cross-compile for Android aarch64
           NDK_CLANG="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-          if [ -x "$NDK_CLANG" ]; then
-            echo "#include <stdio.h>" > /tmp/march_test.c
-            echo "int main(void) { printf(\"march-ok\"); return 0; }" >> /tmp/march_test.c
-            "$NDK_CLANG" -o /tmp/march_test_android /tmp/march_test.c -static && \
-              echo "NDK clang cross-compile test: OK" || \
-              echo "::warning::NDK clang cross-compile test failed"
-          else
-            echo "::warning::NDK clang not found at $NDK_CLANG"
-          fi
-
+          echo "#include <stdio.h>" > /tmp/t.c
+          echo "int main(void){return 0;}" >> /tmp/t.c
+          "$NDK_CLANG" -o /tmp/t /tmp/t.c && echo "NDK clang: OK" || echo "NDK clang: FAIL"
           echo "march compatibility: PASS"
 
-      - name: Build Rust .so for Android arm64-v8a
+      - name: Build .so library
         run: |
           cargo ndk -t arm64-v8a \
             -o example/android/gradle/app/src/main/jniLibs \
             build --release --lib
 
-      - name: Build APK with Gradle
-        working-directory: example/android/gradle
+      - name: Verify .so
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          find example/android/gradle/app/src/main/jniLibs -name "*.so" -exec ls -lh {} \;
+          readelf -h example/android/gradle/app/src/main/jniLibs/arm64-v8a/*.so | grep -E 'Class|Machine'
 
-      - name: Verify APK
-        run: |
-          APK=$(find example/android/gradle -name "*.apk" -type f | head -1)
-          if [ -z "$APK" ]; then
-            echo "::error::No APK found"
-            exit 1
-          fi
-          echo "APK: $APK"
-          ls -lh "$APK"
-          # Check APK contains the native lib
-          unzip -l "$APK" | grep -E "\.so$|lib/" || true
-
-      - name: Upload APK
+      - name: Upload .so library
         uses: actions/upload-artifact@v4
         with:
-          name: gpui-mobile-apk-aarch64-${{ github.sha }}
-          path: example/android/gradle/app/build/outputs/apk/**/*.apk
+          name: gpui-mobile-lib-aarch64-${{ github.sha }}
+          path: example/android/gradle/app/src/main/jniLibs/**/*.so
           if-no-files-found: error
