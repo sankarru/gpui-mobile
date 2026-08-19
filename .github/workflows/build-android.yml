@@ -34,6 +34,7 @@ jobs:
           curl -fLo /tmp/ndk.zip "$NDK_URL"
           unzip -q /tmp/ndk.zip -d /opt
           echo "ANDROID_NDK_HOME=/opt/android-ndk-r29" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=/opt/android-ndk-r29" >> "$GITHUB_ENV"
 
       - name: Build .so library
         run: |
